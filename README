@@ -1,0 +1,52 @@
+» Snippets
+
+This is a Jabber bot that periodically asks registered users what they
+are doing, stores the responses in a database, and provides access to
+them through a simple web interface.
+
+» Installation
+
+You need the following:
+
+    1. PostgreSQL
+    2. Perl modules: AnyEvent, AnyEvent::HTTPD, AnyEvent::DBI,
+       AnyEvent::XMPP, DBI, DBD::Pg, HTML::Entities (and all
+       dependencies thereof).
+    3. An account on a Jabber server.
+
+First, create the database schema:
+
+    createuser snippets
+    createdb -O snippets snippets
+    psql snippets -f snippets.sql
+
+Then create a ~/.snippetsrc with the following contents:
+
+    jid = <your jabber account id>
+    password = <your jabber password>
+
+If you want, you can specify a different dsn, db-user, or db-password
+(the defaults are "dbi:Pg:database=snippets", "snippets", and ""), or
+http-port (8889 by default).
+
+Finally, just run snippets.
+
+» Operation
+
+Add snippets's jid to your Jabber roster. Snippets will subscribe to
+your presence and send you usage instructions. You can then send it
+messages telling it what you're working on. If enough time passes
+without an update from you, it will inquire politely.
+
+You can access the web interface at <http://your.ip:8889/>. It will show
+you a list of subscribed users, with links to the messages received from
+them.
+
+» Support
+
+Contact the author at ams@toroid.org by email or Jabber if you have any
+questions or trouble getting this program to work.
+
+--
+Abhijit Menon-Sen <ams@toroid.org>
+2010-08-15
