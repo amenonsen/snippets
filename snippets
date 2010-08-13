@@ -1,0 +1,353 @@
+#!/usr/bin/perl
+# Copyright 2010 Abhijit Menon-Sen <ams@toroid.org>
+#
+
+use strict;
+use warnings;
+
+use AnyEvent::DBI;
+use HTML::Entities;
+use AnyEvent::HTTPD;
+use AnyEvent::XMPP::IM::Connection;
+use AnyEvent::XMPP::Util qw(bare_jid);
+
+my %contacts;
+
+my %cfg = configure();
+
+my $cond = AnyEvent->condvar;
+
+my $dbh = AnyEvent::DBI->new(
+    $cfg{dsn}, $cfg{"db-user"}, $cfg{"db-password"},
+    on_error => sub { $cond->send if $_[3] }
+);
+
+my $httpd = AnyEvent::HTTPD->new( port => $cfg{"http-port"} );
+$httpd->reg_cb( '' => \&http_request );
+
+my $xmpp = AnyEvent::XMPP::IM::Connection->new(
+    jid => $cfg{jid}, password => $cfg{password}
+);
+$xmpp->reg_cb(
+    message => \&message,
+    session_ready => \&session_ready,
+    roster_update => \&update_roster,
+    contact_request_subscribe => \&subscription_request,
+    contact_did_unsubscribe => \&unsubscription_notice,
+    disconnect => sub { $cond->send }
+);
+
+my $timer = AnyEvent->timer(
+    after => 60 + (60 - AnyEvent->now % 60),
+    cb => \&send_reminders,
+    interval => 60
+);
+
+startup();
+
+$cond->wait;
+
+# Read variable assignments from a configuration file and return them as
+# a hash. The syntax of an assignment is "var = value", where value may
+# be unquoted or quoted with ' or ". In the latter case, \ may be used
+# to escape the quote character.
+
+sub configure {
+    local *F;
+    my $cfg = $ARGV[1] || $ENV{SNIPPETSRC} || "$ENV{HOME}/.snippetsrc";
+    die "Can't find configuration file $cfg\n" unless -f $cfg;
+    open ( F, $cfg ) or die "Can't open configuration file $cfg: $!\n";
+
+    my %cfg = (
+        dsn => "dbi:Pg:dbname=snippets",
+        "db-user" => "snippets",
+        "db-password" => "",
+        "http-port" => 8889
+    );
+
+    while ( <F> ) {
+        chomp;
+        next if /^$/ || /^#/;
+        unless ( /^([a-zA-Z0-9-]+)\s*=\s*(.*?)\s*$/ ) {
+            die "Can't parse configuration line as 'var = \"value\"': $_\n";
+        }
+        else {
+            my ( $var, $value ) = ( $1, $2 );
+            if ( $value =~ /(["'])(.*)\1/ ) {
+                $value = $2;
+                if ( $1 eq '"' ) {
+                    $value =~ s/\\(.)/$1/g;
+                }
+            }
+            $cfg{$var} = $value;
+        }
+    }
+
+    foreach my $v qw(jid password dsn db-user db-password http-port) {
+        unless ( defined $cfg{$v} ) {
+            die "No value specified for mandatory variable $v\n";
+        }
+    }
+
+    return %cfg;
+}
+
+# Startup functions
+#
+# We fill in %contacts from the database and then start our XMPP client.
+
+sub startup {
+    $dbh->exec(
+        "select jid, subscription, ".
+        "coalesce(extract(epoch from max(received))::int, 0) as latest ".
+        "from contacts left join messages using (jid) ".
+        "group by jid, subscription",
+        sub {
+            my ($dbh, $rows, $rv) = @_;
+
+            return $cond->send unless $rv;
+            foreach (@$rows) {
+                my ($jid, $sub, $latest) = @$_;
+                $contacts{$jid} = {
+                    subscription => $sub,
+                    latest => $latest
+                };
+            }
+
+            $xmpp->connect;
+        }
+    );
+}
+
+# Utility functions
+
+sub AnyEvent::DBI::do_or_die {
+    my ($dbh, $query, @params) = @_;
+    $dbh->exec( $query, @params, sub { $cond->send unless $_[2] } );
+}
+
+# Roster management
+#
+# We start off with an empty roster. If someone asks to subscribe to us,
+# we approve the request and subscribe to them too. If they unsubscribe
+# later, we get a farewell notification and remove them from our roster.
+#
+# Complications arise when we have to deal with events that happen when
+# we are offline, for which we do not receive individual notifications.
+# We can only try to figure out what happened by looking at the first
+# roster update we receive after we reconnect. But we don't bother to
+# do all that yet.
+
+my $ready = 0;
+
+sub session_ready {
+    $ready = 1;
+}
+
+sub update_roster {
+    my ($xmpp, $roster, $contacts) = @_;
+
+    return unless $ready;
+
+    foreach my $contact (@$contacts) {
+        my $jid = bare_jid $contact->jid;
+        my $sub = $contact->subscription;
+
+        if (exists $contacts{$jid}) {
+            if ($sub ne $contacts{$jid}->{subscription}) {
+                print "Updating subscription for $jid to $sub\n";
+                $contacts{$jid}->{subscription} = $sub;
+                $dbh->do_or_die(
+                    "update contacts set subscription=? where jid=?",
+                    $sub, $jid
+                );
+            }
+        }
+        elsif ($sub eq 'both') {
+            print "Adding new subscription for $jid\n";
+            $contacts{$jid} = { subscription => $sub, latest => 0 };
+            $dbh->do_or_die(
+                "insert into contacts (jid,subscription) values (?,?)",
+                $jid, $sub
+            );
+        }
+    }
+}
+
+sub subscription_request {
+    my ($xmpp, $roster, $contact, $message) = @_;
+
+    print "Subscription request from ", bare_jid($contact->jid), "\n";
+
+    $contact->send_subscribed;
+    $contact->send_subscribe;
+}
+
+sub unsubscription_notice {
+    my ($xmpp, $roster, $contact, $message) = @_;
+
+    print "Unsubscription notice from ", bare_jid($contact->jid), "\n";
+
+    $roster->delete_contact( $contact->jid );
+}
+
+# Message handling
+#
+# We receive messages from subscribers and (unless they are one of the
+# few commands we recognise) insert them into the database. We also send
+# messages to users who have not written to us in a while.
+
+sub message {
+    my ($j, $msg) = @_;
+
+    my $jid = bare_jid $msg->from;
+    my $body = $msg->body;
+
+    # We're cautious about what we accept, for now.
+    unless (exists $contacts{$jid} &&
+            $contacts{$jid}->{subscription} eq 'both' &&
+            $msg->type eq 'chat' && $body =~ /\S/)
+    {
+        return;
+    }
+
+    # We don't recognise any commands yet, so everything is a status
+    # update. That will change soon.
+
+    $contacts{$jid}->{latest} = time;
+    $dbh->do_or_die(
+        "insert into messages (jid,message) values (?,?)",
+        $jid, $body
+    );
+
+    # Acknowledge receipt.
+
+    my $reply = $msg->make_reply;
+    $reply->add_body("OK");
+    $reply->send;
+
+    print "Received status update from $jid\n";
+}
+
+sub send_reminders {
+    my $now = time;
+
+    foreach my $jid (sort keys %contacts) {
+        my $last = $contacts{$jid}->{latest};
+        if (exists $contacts{$jid}->{reminded}) {
+            my $reminded = $contacts{$jid}->{reminded};
+            if ($reminded > $last) {
+                $last = $reminded;
+            }
+        }
+
+        next unless $contacts{$jid}->{subscription} eq 'both';
+        next unless $last+1800 < $now;
+
+        print "Sending reminder to $jid\n";
+
+        $contacts{$jid}->{reminded} = $now;
+        AnyEvent::XMPP::IM::Message->new(
+            type => 'chat',
+            to => $jid, from => $cfg{jid},
+            body => "What are you doing?"
+        )->send($xmpp);
+    }
+}
+
+# Web interface
+#
+# We know only how to generate a list of subscribers, a list of messages
+# from a particular subscriber, or a blunt "Not found" message. This is
+# simple-minded. If anything more complicated is ever needed (and I can
+# see it will be), it should be done in an external program that talks
+# to the snippets database.
+
+sub http_request {
+    my ($httpd, $req) = @_;
+
+    ( my $jid = $req->url ) =~ s/^\///;
+
+    if ( $jid eq '' ) {
+        my $text;
+        foreach my $jid (keys %contacts) {
+            next unless $contacts{$jid}->{subscription} eq 'both';
+            $text .= qq{<li><a href="$jid">$jid</a>\n};
+        }
+        $text ||= "<li>None yet.";
+        $text = "<ul>$text</ul>";
+
+        $req->respond([
+            200, "OK", { "Content-type" => "text/html" },
+            html("Subscribers", $text)
+        ]);
+    }
+    elsif ( exists $contacts{$jid} &&
+            $contacts{$jid}->{subscription} eq 'both' )
+    {
+        $dbh->exec(
+            "select to_char(received, 'YYYY-MM-DD HH24:MI:SS') as date, ".
+            "message from messages where jid=? order by received desc", $jid,
+            sub {
+                my ($dbh, $rows, $rv) = @_;
+
+                return $cond->send unless $rv;
+
+                my $text;
+                foreach (@$rows) {
+                    my ($date, $message) = @$_;
+                    $text .= qq{<li><span class=date>$date</span>: $message\n};
+                }
+
+                $text ||= "<li>None yet.";
+                $text = "<ul>$text</ul>";
+
+                $req->respond([
+                    200, "OK", { "Content-type" => "text/html" },
+                    html("Messages from $jid", $text)
+                ]);
+            }
+        );
+    }
+    else {
+        $req->respond([
+            404, "Not found", { "Content-type" => "text/plain" },
+            "Not found"
+        ]);
+    }
+}
+
+# How could this program be complete without its own little templating
+# system?
+
+my $html;
+
+sub html {
+    my ($title, $text) = @_;
+
+    unless ($html) {
+        local $/;
+        $html = <DATA>;
+    }
+
+    my $str = $html;
+    $str =~ s/\$TITLE/$title/g;
+    $str =~ s/\$TEXT/$text/g;
+    return $str;
+}
+
+__DATA__
+<!doctype html>
+<html><head>
+<title>snippets :: $TITLE</title>
+<style type="text/css">
+body {
+    background: #ffffff;
+    padding: 1em;
+}
+</style>
+</head><body>
+<h1>$TITLE</h1>
+<p>
+$TEXT
+</body></html>
