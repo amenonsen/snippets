@@ -188,7 +188,7 @@ sub send_reminders {
 
     my $roster = $xmpp->get_roster;
     foreach my $contact ($roster->get_contacts()) {
-        my $jid = $contact->jid;
+        my $jid = bare_jid $contact->jid;
         my $last = $contacts{$jid}->{latest};
         if (exists $contacts{$jid}->{reminded}) {
             my $reminded = $contacts{$jid}->{reminded};
@@ -230,7 +230,7 @@ sub http_request {
 
         foreach my $contact ($roster->get_contacts()) {
             next unless $contact->subscription eq 'both';
-            my $jid = $contact->jid;
+            my $jid = bare_jid $contact->jid;
             $text .= qq{<li><a href="$jid">$jid</a>\n};
         }
 
