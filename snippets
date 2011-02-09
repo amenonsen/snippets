@@ -31,7 +31,6 @@ my $xmpp = AnyEvent::XMPP::IM::Connection->new(
 $xmpp->reg_cb(
     message => \&message,
     session_ready => \&session_ready,
-    roster_update => \&update_roster,
     contact_request_subscribe => \&subscription_request,
     contact_did_unsubscribe => \&unsubscription_notice,
     disconnect => sub { $cond->send }
@@ -98,18 +97,16 @@ sub configure {
 
 sub startup {
     $dbh->exec(
-        "select jid, subscription, ".
+        "select jid, ".
         "coalesce(extract(epoch from max(received))::int, 0) as latest ".
-        "from contacts left join messages using (jid) ".
-        "group by jid, subscription",
+        "from messages group by jid",
         sub {
             my ($dbh, $rows, $rv) = @_;
 
             return $cond->send unless $rv;
             foreach (@$rows) {
-                my ($jid, $sub, $latest) = @$_;
+                my ($jid, $latest) = @$_;
                 $contacts{$jid} = {
-                    subscription => $sub,
                     latest => $latest
                 };
             }
@@ -144,36 +141,6 @@ sub session_ready {
     $ready = 1;
 }
 
-sub update_roster {
-    my ($xmpp, $roster, $contacts) = @_;
-
-    return unless $ready;
-
-    foreach my $contact (@$contacts) {
-        my $jid = bare_jid $contact->jid;
-        my $sub = $contact->subscription;
-
-        if (exists $contacts{$jid}) {
-            if ($sub ne $contacts{$jid}->{subscription}) {
-                print "Updating subscription for $jid to $sub\n";
-                $contacts{$jid}->{subscription} = $sub;
-                $dbh->do_or_die(
-                    "update contacts set subscription=? where jid=?",
-                    $sub, $jid
-                );
-            }
-        }
-        elsif ($sub eq 'both') {
-            print "Adding new subscription for $jid\n";
-            $contacts{$jid} = { subscription => $sub, latest => 0 };
-            $dbh->do_or_die(
-                "insert into contacts (jid,subscription) values (?,?)",
-                $jid, $sub
-            );
-        }
-    }
-}
-
 sub subscription_request {
     my ($xmpp, $roster, $contact, $message) = @_;
 
@@ -203,11 +170,7 @@ sub message {
     my $jid = bare_jid $msg->from;
     my $body = $msg->body;
 
-    # We're cautious about what we accept, for now.
-    unless (exists $contacts{$jid} &&
-            $contacts{$jid}->{subscription} eq 'both' &&
-            $msg->type eq 'chat' && $body =~ /\S/)
-    {
+    unless ($msg->type eq 'chat' && $body =~ /\S/) {
         return;
     }
 
@@ -232,7 +195,9 @@ sub message {
 sub send_reminders {
     my $now = time;
 
-    foreach my $jid (sort keys %contacts) {
+    my $roster = $xmpp->get_roster;
+    foreach my $contact ($roster->get_contacts()) {
+        my $jid = $contact->jid;
         my $last = $contacts{$jid}->{latest};
         if (exists $contacts{$jid}->{reminded}) {
             my $reminded = $contacts{$jid}->{reminded};
@@ -241,7 +206,7 @@ sub send_reminders {
             }
         }
 
-        next unless $contacts{$jid}->{subscription} eq 'both';
+        next unless $contact->subscription eq 'both';
         next unless $last+1800 < $now;
 
         print "Sending reminder to $jid\n";
@@ -267,13 +232,17 @@ sub http_request {
     my ($httpd, $req) = @_;
 
     ( my $jid = $req->url ) =~ s/^\///;
+    my $roster = $xmpp->get_roster;
 
     if ( $jid eq '' ) {
         my $text;
-        foreach my $jid (keys %contacts) {
-            next unless $contacts{$jid}->{subscription} eq 'both';
+
+        foreach my $contact ($roster->get_contacts()) {
+            next unless $contact->subscription eq 'both';
+            my $jid = $contact->jid;
             $text .= qq{<li><a href="$jid">$jid</a>\n};
         }
+
         $text ||= "<li>None yet.";
         $text = "<ul>$text</ul>";
 
@@ -282,16 +251,28 @@ sub http_request {
             html("Subscribers", $text)
         ]);
     }
-    elsif ( exists $contacts{$jid} &&
-            $contacts{$jid}->{subscription} eq 'both' )
-    {
+    else {
         $dbh->exec(
             "select to_char(received, 'YYYY-MM-DD HH24:MI:SS') as date, ".
             "message from messages where jid=? order by received desc", $jid,
             sub {
                 my ($dbh, $rows, $rv) = @_;
 
-                return $cond->send unless $rv;
+                unless ($rv) {
+                    $req->respond([
+                        500, "Error", { "Content-type" => "text/plain" }, "Error"
+                    ]);
+                    return;
+                }
+
+                my $contact = $roster->get_contact($jid);
+                if (!$contact && !@$rows) {
+                    $req->respond([
+                        404, "Not found", { "Content-type" => "text/plain" },
+                        "Not found"
+                    ]);
+                    return;
+                }
 
                 my $text;
                 foreach (@$rows) {
@@ -299,7 +280,7 @@ sub http_request {
                     $text .= qq{<li><span class=date>$date</span>: $message\n};
                 }
 
-                $text ||= "<li>None yet.";
+                $text ||= "<li>No messages yet.";
                 $text = "<ul>$text</ul>";
 
                 $req->respond([
@@ -308,12 +289,6 @@ sub http_request {
                 ]);
             }
         );
-    }
-    else {
-        $req->respond([
-            404, "Not found", { "Content-type" => "text/plain" },
-            "Not found"
-        ]);
     }
 }
 
