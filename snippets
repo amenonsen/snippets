@@ -116,13 +116,6 @@ sub startup {
     );
 }
 
-# Utility functions
-
-sub AnyEvent::DBI::do_or_die {
-    my ($dbh, $query, @params) = @_;
-    $dbh->exec( $query, @params, sub { $cond->send unless $_[2] } );
-}
-
 # Roster management
 #
 # We start off with an empty roster. If someone asks to subscribe to us,
@@ -178,16 +171,14 @@ sub message {
     # update. That will change soon.
 
     $contacts{$jid}->{latest} = time;
-    $dbh->do_or_die(
-        "insert into messages (jid,message) values (?,?)",
-        $jid, $body
+    $dbh->exec(
+        "insert into messages (jid,message) values (?,?)", $jid, $body,
+        sub {
+            my $reply = $msg->make_reply;
+            $reply->add_body($#_ ? "OK" : $@);
+            $reply->send;
+        }
     );
-
-    # Acknowledge receipt.
-
-    my $reply = $msg->make_reply;
-    $reply->add_body("OK");
-    $reply->send;
 
     print "Received status update from $jid\n";
 }
