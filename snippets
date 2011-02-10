@@ -201,7 +201,7 @@ sub send_reminders {
     my $roster = $xmpp->get_roster;
     foreach my $contact ($roster->get_contacts()) {
         my $jid = bare_jid $contact->jid;
-        my $last = $contacts{$jid}->{latest};
+        my $last = $contacts{$jid}->{latest} || 0;
         if (exists $contacts{$jid}->{reminded}) {
             my $reminded = $contacts{$jid}->{reminded};
             if ($reminded > $last) {
