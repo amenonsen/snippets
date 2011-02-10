@@ -147,7 +147,7 @@ sub subscription_request {
     $contact->send_subscribed;
     $contact->send_subscribe;
 
-    send_help($jid);
+    send_help_to($jid);
 }
 
 sub unsubscription_notice {
@@ -223,24 +223,25 @@ sub send_reminders {
     }
 }
 
+sub send_help_to {
+    my $jid = shift;
+    send_help(AnyEvent::XMPP::IM::Message->new(
+        type => 'chat', to => $jid, from => $cfg{jid}
+    ));
+}
+
 sub send_help {
-    my ($p) = @_;
+    my ($msg) = @_;
 
-    unless (ref $p) {
-        $p = AnyEvent::XMPP::IM::Message->new(
-            type => 'chat', to => $p, from => $cfg{jid}
-        );
-    }
-
-    my $jid = bare_jid $p->to();
+    my $jid = bare_jid $msg->to();
     my $url = $cfg{"public-base-url"};
 
-    $p->add_body(<<"    HELP");
+    $msg->add_body(<<"    HELP");
 Subscribe to $cfg{jid} and I will remind me to tell me what you are doing.
 Send me messages and I will add them to $url/$jid
 Look at other people's messages at $url
     HELP
-    $p->send($xmpp);
+    $msg->send($xmpp);
 }
 
 # Web interface
