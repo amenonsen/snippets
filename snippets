@@ -61,8 +61,9 @@ sub configure {
         dsn => "dbi:Pg:dbname=snippets",
         "db-user" => "snippets",
         "db-password" => "",
-        "http-port" => 8889
+        "http-port" => 8889,
     );
+    $cfg{"public-base-url"} = "http://localhost:".$cfg{"http-port"};
 
     while ( <F> ) {
         chomp;
@@ -82,9 +83,12 @@ sub configure {
         }
     }
 
-    foreach my $v qw(jid password dsn db-user db-password http-port) {
+    my @required = qw(
+        jid password dsn db-user db-password http-port public-base-url
+    );
+    foreach my $v (@required) {
         unless ( defined $cfg{$v} ) {
-            die "No value specified for mandatory variable $v\n";
+            die "No value specified for required variable $v\n";
         }
     }
 
@@ -137,10 +141,13 @@ sub session_ready {
 sub subscription_request {
     my ($xmpp, $roster, $contact, $message) = @_;
 
-    print "Subscription request from ", bare_jid($contact->jid), "\n";
+    my $jid = bare_jid $contact->jid;
+    print "Subscription request from $jid\n";
 
     $contact->send_subscribed;
     $contact->send_subscribe;
+
+    send_help($jid);
 }
 
 sub unsubscription_notice {
@@ -164,6 +171,11 @@ sub message {
     my $body = $msg->body;
 
     unless ($msg->type eq 'chat' && $body =~ /\S/) {
+        return;
+    }
+
+    if ($body =~ /^[^a-zA-Z]*help[^a-zA-Z]*$/i) {
+        send_help($msg->make_reply);
         return;
     }
 
@@ -209,6 +221,26 @@ sub send_reminders {
             body => "What are you doing?"
         )->send($xmpp);
     }
+}
+
+sub send_help {
+    my ($p) = @_;
+
+    unless (ref $p) {
+        $p = AnyEvent::XMPP::IM::Message->new(
+            type => 'chat', to => $p, from => $cfg{jid}
+        );
+    }
+
+    my $jid = bare_jid $p->to();
+    my $url = $cfg{"public-base-url"};
+
+    $p->add_body(<<"    HELP");
+Subscribe to $cfg{jid} and I will remind me to tell me what you are doing.
+Send me messages and I will add them to $url/$jid
+Look at other people's messages at $url
+    HELP
+    $p->send($xmpp);
 }
 
 # Web interface
