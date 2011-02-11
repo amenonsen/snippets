@@ -8,8 +8,10 @@ use warnings;
 use AnyEvent::DBI;
 use HTML::Entities;
 use AnyEvent::HTTPD;
+use POSIX qw(strftime);
 use AnyEvent::XMPP::IM::Connection;
 use AnyEvent::XMPP::Util qw(bare_jid cmp_bare_jid);
+
 
 my %contacts;
 
@@ -222,6 +224,32 @@ sub message {
 sub send_reminders {
     my $now = time;
 
+    my $wday = strftime "%u", localtime;
+    my $day = "(1,2,3,4,5)";
+    $day = "(0,6)" if ( $wday > 5 );
+    my %working;
+
+    # find people who have submitted snippets in the moment's
+    # surrounding three hours on a recent day of the same type
+    # (weekday if today is a weekday, weekend else), where "recent"
+    # is just long enough to cover one week or two weekends
+
+    $dbh->exec(
+        "select distinct jid from messages where ".
+        "extract(dow from received) in $day and ".
+        "age(received)<interval '9 days' and ".
+        "@(extract (epoch from (received::time - current_time::time))) < 5400",
+        sub { 
+            my ($dbh, $rows, $rv) = @_;
+
+            return $cond->send unless $rv;
+            foreach (@$rows) {
+                my ($jid) = @$_;
+		$working{$jid}++;
+            }
+        }
+    );
+
     my $roster = $xmpp->get_roster;
     foreach my $contact ($roster->get_contacts()) {
         my $jid = bare_jid $contact->jid;
@@ -235,6 +263,7 @@ sub send_reminders {
 
         next unless $contact->subscription eq 'both';
         next unless $last+1800 < $now;
+        next unless defined($working{$contact->jid});
 
         print "Sending reminder to $jid\n";
 
