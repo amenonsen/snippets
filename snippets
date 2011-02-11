@@ -205,9 +205,6 @@ sub message {
         return;
     }
 
-    # We don't recognise any commands yet, so everything is a status
-    # update. That will change soon.
-
     $contacts{$jid}->{latest} = time;
     $dbh->exec(
         "insert into messages (jid,message) values (?,?)", $jid, $body,
@@ -226,26 +223,26 @@ sub send_reminders {
 
     my $wday = strftime "%u", localtime;
     my $day = "(1,2,3,4,5)";
-    $day = "(0,6)" if ( $wday > 5 );
+    $day = "(0,6)" if $wday > 5;
     my %working;
 
-    # find people who have submitted snippets in the moment's
-    # surrounding three hours on a recent day of the same type
-    # (weekday if today is a weekday, weekend else), where "recent"
-    # is just long enough to cover one week or two weekends
+    # Find people who have submitted snippets in the three hours before,
+    # after, and including the current time on a recent day of the same
+    # type (a weekday if today is a weekday, weekend otherwise), where
+    # "recent" is just long enough to cover one or two weekends.
 
     $dbh->exec(
         "select distinct jid from messages where ".
         "extract(dow from received) in $day and ".
         "age(received)<interval '9 days' and ".
         "@(extract (epoch from (received::time - current_time::time))) < 5400",
-        sub { 
+        sub {
             my ($dbh, $rows, $rv) = @_;
+            return unless $rv;
 
-            return $cond->send unless $rv;
             foreach (@$rows) {
                 my ($jid) = @$_;
-		$working{$jid}++;
+                $working{$jid}++;
             }
         }
     );
@@ -263,7 +260,7 @@ sub send_reminders {
 
         next unless $contact->subscription eq 'both';
         next unless $last+1800 < $now;
-        next unless defined($working{$contact->jid});
+        next unless $working{$jid};
 
         print "Sending reminder to $jid\n";
 
