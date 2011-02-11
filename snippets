@@ -9,7 +9,7 @@ use AnyEvent::DBI;
 use HTML::Entities;
 use AnyEvent::HTTPD;
 use AnyEvent::XMPP::IM::Connection;
-use AnyEvent::XMPP::Util qw(bare_jid);
+use AnyEvent::XMPP::Util qw(bare_jid cmp_bare_jid);
 
 my %contacts;
 
@@ -101,8 +101,7 @@ sub configure {
 
 sub startup {
     $dbh->exec(
-        "select jid, ".
-        "coalesce(extract(epoch from max(received))::int, 0) as latest ".
+        "select jid, extract(epoch from max(received))::int as latest ".
         "from messages group by jid",
         sub {
             my ($dbh, $rows, $rv) = @_;
@@ -145,7 +144,7 @@ sub subscription_request {
     print "Subscription request from $jid\n";
 
     $contact->send_subscribed;
-    $contact->send_subscribe;
+    $contact->send_subscribe unless $contact->subscription eq 'both';
 
     send_help_to($jid);
 }
@@ -174,8 +173,33 @@ sub message {
         return;
     }
 
-    if ($body =~ /^[^a-zA-Z]*help[^a-zA-Z]*$/i) {
-        send_help($msg->make_reply);
+    my $reply = $msg->make_reply;
+
+    if ($body =~ /^[\/!]*help[^a-zA-Z]*$/i) {
+        send_help($reply);
+        return;
+    }
+    elsif ($body =~ /^[\/!]*invite (\S+)$/i) {
+        my $to_jid = $1;
+
+        if ($to_jid !~ /@/ || cmp_bare_jid $to_jid, $cfg{jid}) {
+            $reply->add_body("Sorry, that doesn't look like a valid JID");
+            $reply->send;
+            return;
+        }
+
+        $reply->add_body("Invitation sent");
+        $reply->send;
+
+        my $roster = $xmpp->get_roster;
+        my $contact = $roster->get_contact($to_jid) ||
+            AnyEvent::XMPP::IM::Contact->new(
+                connection => $xmpp, jid => $to_jid
+            );
+
+        return if $contact->is_on_roster && $contact->subscription ne 'none';
+        print "Sending invitation from $jid to $to_jid\n";
+        $contact->send_subscribe;
         return;
     }
 
