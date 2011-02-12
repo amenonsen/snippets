@@ -425,14 +425,9 @@ sub for_display {
 
     $message = encode_entities($message);
     $message =~
-        s{(http://\S+)}{
-            my $url = $1;
-            my $suffix = "";
-            if ($url =~ s/([.,])$//) {
-                $suffix = $1;
-            }
-            qq{<a href="$url">$url</a>$suffix}
-        }gie;
+        s{(https?://\S+?)([,.]*(?:$|\s))}{
+            qq#<a href="$1">$1</a># . ($2||"")
+        }giex;
 
     return $message;
 }
