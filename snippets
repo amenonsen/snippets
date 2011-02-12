@@ -309,14 +309,12 @@ sub http_request {
     my $roster = $xmpp->get_roster;
 
     if ( $jid eq '' ) {
-
         $dbh->exec(
             "select to_char(received, 'YYYY-MM-DD HH24:MI:SS') as date, ".
-            "jid, message from messages where age(received) < interval '3 days' order by jid asc, received desc", 
+            "jid, message from messages where age(received) < interval '3 days' ".
+            "order by jid asc, received desc",
             sub {
                 my ($dbh, $rows, $rv) = @_;
-		my $jid = undef;
-		my $count = 0;
 
                 unless ($rv) {
                     $req->respond([
@@ -325,22 +323,29 @@ sub http_request {
                     return;
                 }
 
-		my $text;
+                my $text;
 
-                foreach (@$rows) {
-                    my ($date, $rjid, $message) = @$_;
-		    if ( defined($jid) && $jid eq $rjid ) {
-			++$count;
-		    } else {
-			$text .= "</div>" if ( defined( $jid ) );
-			$jid = $rjid;
-			$count = 1;
-			$text .= qq{<div class="user"><a href="$jid">$jid</a>};
-		    }
-                    $text .= qq{<div class="snippet"><span class="date">$date</span>: $message</div>\n} if ( $count < 5 );
-		    $count++;
+                while (@$rows) {
+                    my $jid = $rows->[0][1];
+
+                    my @messages;
+                    while (@$rows && $rows->[0][1] eq $jid) {
+                        push @messages, shift @$rows;
+                    }
+
+                    $text .= qq{<div class=user><a href="$jid">$jid</a>\n};
+
+                    my $n = 0;
+                    while ($n < 5 && $messages[$n]) {
+                        my ($date, $jid, $message) = @{$messages[$n]};
+                        $text .=
+                            qq{<div class="snippet">}.
+                            qq{<span class="date">$date</span>: $message</div>\n};
+                        $n++;
+                    }
+
+                    $text .= qq{</div>\n};
                 }
-		$text .= "</div>" if ( defined( $jid ) );
 
                 $req->respond([
                     200, "OK", { "Content-type" => "text/html" },
