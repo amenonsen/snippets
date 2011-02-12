@@ -10,8 +10,8 @@ You need the following:
 
     1. PostgreSQL
     2. Perl modules: AnyEvent, AnyEvent::HTTPD, AnyEvent::DBI,
-       AnyEvent::XMPP, DBI, DBD::Pg, HTML::Entities (and all
-       dependencies thereof).
+       AnyEvent::XMPP, DBI, DBD::Pg, HTML::Entities, URI::Escape
+       (and all dependencies thereof).
     3. An account on a Jabber server.
 
 First, create the database schema:
