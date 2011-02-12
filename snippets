@@ -39,9 +39,9 @@ $xmpp->reg_cb(
 );
 
 my $timer = AnyEvent->timer(
-    after => 60 + (60 - AnyEvent->now % 60),
+    after => 1800 - AnyEvent->now % 1800,
     cb => \&send_reminders,
-    interval => 60
+    interval => 1800
 );
 
 startup();
