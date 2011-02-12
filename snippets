@@ -5,6 +5,7 @@
 use strict;
 use warnings;
 
+use URI::Escape;
 use AnyEvent::DBI;
 use HTML::Entities;
 use AnyEvent::HTTPD;
@@ -333,11 +334,15 @@ sub http_request {
                         push @messages, shift @$rows;
                     }
 
-                    $text .= qq{<div class=user><a href="$jid">$jid</a>\n};
+                    my $ujid = uri_escape($jid);
+                    my $ejid = encode_entities($jid);
+
+                    $text .= qq{<div class=user><a href="$ujid">$ejid</a>\n};
 
                     my $n = 0;
                     while ($n < 5 && $messages[$n]) {
                         my ($date, $jid, $message) = @{$messages[$n]};
+                        $message = encode_entities($message);
                         $text .=
                             qq{<div class="snippet">}.
                             qq{<span class="date">$date</span>: $message</div>\n};
@@ -380,6 +385,7 @@ sub http_request {
                 my $text;
                 foreach (@$rows) {
                     my ($date, $message) = @$_;
+                    $message = encode_entities($message);
                     $text .= qq{<li><span class=date>$date</span>: $message\n};
                 }
 
@@ -388,7 +394,7 @@ sub http_request {
 
                 $req->respond([
                     200, "OK", { "Content-type" => "text/html" },
-                    html("Messages from $jid", $text)
+                    html("Messages from " . encode_entities($jid), $text)
                 ]);
             }
         );
