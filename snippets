@@ -309,21 +309,45 @@ sub http_request {
     my $roster = $xmpp->get_roster;
 
     if ( $jid eq '' ) {
-        my $text;
 
-        foreach my $contact ($roster->get_contacts()) {
-            next unless $contact->subscription eq 'both';
-            my $jid = bare_jid $contact->jid;
-            $text .= qq{<li><a href="$jid">$jid</a>\n};
-        }
+        $dbh->exec(
+            "select to_char(received, 'YYYY-MM-DD HH24:MI:SS') as date, ".
+            "jid, message from messages where age(received) < interval '3 days' order by jid asc, received desc", 
+            sub {
+                my ($dbh, $rows, $rv) = @_;
+		my $jid = undef;
+		my $count = 0;
 
-        $text ||= "<li>None yet.";
-        $text = "<ul>$text</ul>";
+                unless ($rv) {
+                    $req->respond([
+                        500, "Error", { "Content-type" => "text/plain" }, "Error"
+                    ]);
+                    return;
+                }
 
-        $req->respond([
-            200, "OK", { "Content-type" => "text/html" },
-            html("Subscribers", $text)
-        ]);
+		my $text;
+
+                foreach (@$rows) {
+                    my ($date, $rjid, $message) = @$_;
+		    if ( defined($jid) && $jid eq $rjid ) {
+			++$count;
+		    } else {
+			$text .= "</div>" if ( defined( $jid ) );
+			$jid = $rjid;
+			$count = 1;
+			$text .= qq{<div class="user"><a href="$jid">$jid</a>};
+		    }
+                    $text .= qq{<div class="snippet"><span class="date">$date</span>: $message</div>\n} if ( $count < 5 );
+		    $count++;
+                }
+		$text .= "</div>" if ( defined( $jid ) );
+
+                $req->respond([
+                    200, "OK", { "Content-type" => "text/html" },
+                    html("Snippets overview", $text)
+                ]);
+            }
+        );
     }
     else {
         $dbh->exec(
