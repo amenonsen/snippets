@@ -342,7 +342,7 @@ sub http_request {
                     my $n = 0;
                     while ($n < 5 && $messages[$n]) {
                         my ($date, $jid, $message) = @{$messages[$n]};
-                        $message = encode_entities($message);
+                        $message = for_display($message);
                         $text .=
                             qq{<div class="snippet">}.
                             qq{<span class="date">$date</span>: $message</div>\n};
@@ -385,7 +385,7 @@ sub http_request {
                 my $text;
                 foreach (@$rows) {
                     my ($date, $message) = @$_;
-                    $message = encode_entities($message);
+                    $message = for_display($message);
                     $text .= qq{<li><span class=date>$date</span>: $message\n};
                 }
 
@@ -418,6 +418,23 @@ sub html {
     $str =~ s/\$TITLE/$title/g;
     $str =~ s/\$TEXT/$text/g;
     return $str;
+}
+
+sub for_display {
+    my ($message) = @_;
+
+    $message = encode_entities($message);
+    $message =~
+        s{(http://\S+)}{
+            my $url = $1;
+            my $suffix = "";
+            if ($url =~ s/([.,])$//) {
+                $suffix = $1;
+            }
+            qq{<a href="$url">$url</a>$suffix}
+        }gie;
+
+    return $message;
 }
 
 __DATA__
