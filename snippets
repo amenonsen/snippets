@@ -232,11 +232,19 @@ sub send_reminders {
     # type (a weekday if today is a weekday, weekend otherwise), where
     # "recent" is just long enough to cover one or two weekends.
 
+    # If someone doesn't react in a week, start asking more often. As
+    # soon as the user answers, snippets will start to mould its questions
+    # to the user's working time.
+
     $dbh->exec(
         "select distinct jid from messages where ".
         "extract(dow from received) in $day and ".
         "age(received)<interval '9 days' and ".
-        "@(extract (epoch from (received::time - current_time::time))) < 5400",
+        "@(extract (epoch from (received::time - current_time::time))) < 5400".
+        " union ".
+        "select s.jid from ".
+        "(select jid, max(received) as latest from messages group by jid) s ".
+        "where age(s.latest) > interval '7 days'",
         sub {
             my ($dbh, $rows, $rv) = @_;
             return unless $rv;
@@ -261,7 +269,7 @@ sub send_reminders {
 
         next unless $contact->subscription eq 'both';
         next unless $last+1800 < $now;
-        next unless $working{$jid};
+        next unless defined( $working{$jid} );
 
         print "Sending reminder to $jid\n";
 
