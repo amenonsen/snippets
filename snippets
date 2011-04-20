@@ -150,6 +150,14 @@ sub subscription_request {
     $contact->send_subscribe unless $contact->subscription eq 'both';
 
     send_help_to($jid);
+
+    foreach my $j ( keys %contacts ) {
+        AnyEvent::XMPP::IM::Message->new(
+            type => 'chat',
+            to => $j, from => $cfg{jid},
+            body => "New team member: $jid"
+        )->send($xmpp);
+    }
 }
 
 sub unsubscription_notice {
